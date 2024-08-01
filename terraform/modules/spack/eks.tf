@@ -71,6 +71,9 @@ module "eks" {
       addon_version            = "v1.20.0-eksbuild.1"
       service_account_role_arn = aws_iam_role.ebs_efs_csi_driver.arn
     }
+    coredns = {
+      addon_version = "v1.11.1-eksbuild.9"
+    }
   }
 
   authentication_mode = "API_AND_CONFIG_MAP"
@@ -335,6 +338,11 @@ module "eks_aws_auth" {
   manage_aws_auth_configmap = true
   aws_auth_roles = [
     {
+      rolearn  = module.eks.eks_managed_node_groups["initial"].iam_role_arn,
+      username = "system:node:{{EC2PrivateDNSName}}",
+      groups   = ["system:bootstrappers", "system:nodes"]
+    },
+    {
       # Admin/superuser access to the cluster
       rolearn  = aws_iam_role.eks_cluster_access.arn
       username = "admin"
@@ -359,9 +367,37 @@ module "eks_aws_auth" {
     # This is required for DNS resolution to work on Windows nodes.
     # See info about aws-auth configmap here - https://docs.aws.amazon.com/eks/latest/userguide/windows-support.html#enable-windows-support
     {
-      rolearn  = module.eks.eks_managed_node_groups["initial"].iam_role_arn,
+      rolearn  = module.eks.eks_managed_node_groups["windows"].iam_role_arn,
       username = "system:node:{{EC2PrivateDNSName}}",
-      groups   = ["system:bootstrappers", "system:nodes", "eks:kube-proxy-windows"]
+      groups   = ["eks:kube-proxy-windows", "system:bootstrappers", "system:nodes"]
     }
   ]
+}
+
+
+resource "aws_iam_role" "vpc_cni" {
+  name = "VpcCniPluginRole-${var.deployment_name}"
+  assume_role_policy = jsonencode({
+    "Version" : "2012-10-17",
+    "Statement" : [
+      {
+        "Effect" : "Allow",
+        "Principal" : {
+          "Federated" : module.eks.oidc_provider_arn
+        },
+        "Action" : "sts:AssumeRoleWithWebIdentity",
+        "Condition" : {
+          "StringEquals" : {
+            "${module.eks.oidc_provider}:sub" : "system:serviceaccount:kube-system:aws-node",
+            "${module.eks.oidc_provider}:aud" : "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "vpc_cni" {
+  role       = aws_iam_role.vpc_cni.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
